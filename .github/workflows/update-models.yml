@@ -19,27 +19,18 @@ jobs:
         with:
           node-version: "20"
 
-      # ASSUMPTION: codex ships as @openai/codex on npm. Adjust if the package
-      # name differs.
       - name: Install Codex CLI
         run: npm install -g @openai/codex
-
-      # ASSUMPTION: invoking codex once is sufficient to refresh
-      # ~/.codex/models_cache.json. If a network/auth call is required, add
-      # OPENAI_API_KEY here from secrets and run a no-op like `codex models ls`.
-      - name: Seed models cache
-        run: codex --help > /dev/null
 
       - name: Extract listed models
         id: models
         run: |
           set -euo pipefail
-          cache="$HOME/.codex/models_cache.json"
-          if [[ ! -f "$cache" ]]; then
-            echo "::error::Codex did not produce $cache"
+          slugs=$(codex debug models | jq -r '[.models[] | select(.visibility == "list") | .slug] | join("`, `")')
+          if [[ -z "$slugs" ]]; then
+            echo "::error::No models with visibility=list returned by codex debug models"
             exit 1
           fi
-          slugs=$(jq -r '[.[] | select(.visibility == "list") | .slug] | join("`, `")' "$cache")
           echo "slugs=$slugs" >> "$GITHUB_OUTPUT"
 
       - name: Patch SKILL.md
