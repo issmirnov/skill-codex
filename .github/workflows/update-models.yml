@@ -1,0 +1,98 @@
+name: Update Codex model list
+
+on:
+  schedule:
+    - cron: "0 13 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # ASSUMPTION: codex ships as @openai/codex on npm. Adjust if the package
+      # name differs.
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
+
+      # ASSUMPTION: invoking codex once is sufficient to refresh
+      # ~/.codex/models_cache.json. If a network/auth call is required, add
+      # OPENAI_API_KEY here from secrets and run a no-op like `codex models ls`.
+      - name: Seed models cache
+        run: codex --help > /dev/null
+
+      - name: Extract listed models
+        id: models
+        run: |
+          set -euo pipefail
+          cache="$HOME/.codex/models_cache.json"
+          if [[ ! -f "$cache" ]]; then
+            echo "::error::Codex did not produce $cache"
+            exit 1
+          fi
+          slugs=$(jq -r '[.[] | select(.visibility == "list") | .slug] | join("`, `")' "$cache")
+          echo "slugs=$slugs" >> "$GITHUB_OUTPUT"
+
+      - name: Patch SKILL.md
+        run: |
+          set -euo pipefail
+          skill="plugins/skill-codex/skills/codex/SKILL.md"
+          # Replaces the parenthesised model list on the "Ask the user ..." line.
+          # Pin the line by its surrounding text so unrelated parens are safe.
+          python3 - "$skill" "${{ steps.models.outputs.slugs }}" <<'PY'
+          import re, sys, pathlib
+          path, slugs = pathlib.Path(sys.argv[1]), sys.argv[2]
+          text = path.read_text()
+          new = re.sub(
+              r"(which model to run \()`[^)]+`(\))",
+              lambda m: f"{m.group(1)}`{slugs}`{m.group(2)}",
+              text,
+              count=1,
+          )
+          if new == text:
+              sys.exit("model list anchor not found in SKILL.md")
+          path.write_text(new)
+          PY
+
+      - name: Bump versions
+        id: bump
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- plugins/skill-codex/skills/codex/SKILL.md; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          current=$(jq -r .version plugins/skill-codex/.claude-plugin/plugin.json)
+          IFS=. read -r maj min patch <<<"$current"
+          next="${maj}.${min}.$((patch + 1))"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+          tmp=$(mktemp)
+          jq --arg v "$next" '.version = $v' plugins/skill-codex/.claude-plugin/plugin.json > "$tmp" && mv "$tmp" plugins/skill-codex/.claude-plugin/plugin.json
+          jq --arg v "$next" '(.plugins[] | select(.name=="skill-codex") | .version) = $v' .claude-plugin/marketplace.json > "$tmp" && mv "$tmp" .claude-plugin/marketplace.json
+          sed -i -E "s/^version: .*/version: $next/" openpackage.yml
+
+      - name: Open PR
+        if: steps.bump.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: bot/update-models
+          title: "chore: refresh Codex model list (v${{ steps.bump.outputs.next }})"
+          commit-message: "chore: refresh Codex model list to v${{ steps.bump.outputs.next }}"
+          body: |
+            Automated refresh from `~/.codex/models_cache.json` (entries with `visibility: "list"`).
+
+            Bumps `plugin.json`, `openpackage.yml`, and `.claude-plugin/marketplace.json` to v${{ steps.bump.outputs.next }} so installed users actually receive the change (see #15).
+
+            Review the SKILL.md diff before merging — this PR intentionally does not auto-merge.
+          delete-branch: true
