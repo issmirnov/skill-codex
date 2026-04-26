@@ -1,3 +1,23 @@
+# Update Codex model list
+#
+# REQUIRED REPO SETTING (one-time, by an owner) — without this, the "Open PR"
+# step fails with:
+#   Error: GitHub Actions is not permitted to create or approve pull requests.
+#
+# The `permissions:` block below is necessary but not sufficient: GitHub also
+# enforces a repo-level policy that blocks GITHUB_TOKEN from creating PRs by
+# default, regardless of what the workflow asks for. Enable it once at:
+#
+#   Settings → Actions → General → Workflow permissions
+#     [x] Allow GitHub Actions to create and approve pull requests
+#
+# Or via gh CLI:
+#
+#   gh api repos/<owner>/<repo>/actions/permissions/workflow \
+#     --method PUT \
+#     --field default_workflow_permissions=write \
+#     --field can_approve_pull_request_reviews=true
+
 name: Update Codex model list
 
 on:
