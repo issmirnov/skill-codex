@@ -46,7 +46,11 @@ jobs:
         id: models
         run: |
           set -euo pipefail
-          slugs=$(codex debug models | jq -r '[.models[] | select(.visibility == "list") | .slug] | join("`, `")')
+          # Emit slugs as plain comma-separated data; Python adds the backtick
+          # formatting in the next step. Keeping backticks out of this output
+          # avoids bash command-substitution surprises when the value is later
+          # interpolated into a double-quoted shell context.
+          slugs=$(codex debug models | jq -r '[.models[] | select(.visibility == "list") | .slug] | join(",")')
           if [[ -z "$slugs" ]]; then
             echo "::error::No models with visibility=list returned by codex debug models"
             exit 1
@@ -54,18 +58,24 @@ jobs:
           echo "slugs=$slugs" >> "$GITHUB_OUTPUT"
 
       - name: Patch SKILL.md
+        env:
+          # Pass via env var, not `${{ }}` interpolation, so the value is never
+          # re-parsed by bash (which would expand any backticks as command
+          # substitution and silently mangle the list).
+          SLUGS: ${{ steps.models.outputs.slugs }}
         run: |
           set -euo pipefail
           skill="plugins/skill-codex/skills/codex/SKILL.md"
           # Replaces the parenthesised model list on the "Ask the user ..." line.
           # Pin the line by its surrounding text so unrelated parens are safe.
-          python3 - "$skill" "${{ steps.models.outputs.slugs }}" <<'PY'
+          python3 - "$skill" "$SLUGS" <<'PY'
           import re, sys, pathlib
-          path, slugs = pathlib.Path(sys.argv[1]), sys.argv[2]
+          path, raw = pathlib.Path(sys.argv[1]), sys.argv[2]
+          formatted = ", ".join(f"`{s}`" for s in raw.split(",") if s)
           text = path.read_text()
           new = re.sub(
               r"(which model to run \()`[^)]+`(\))",
-              lambda m: f"{m.group(1)}`{slugs}`{m.group(2)}",
+              lambda m: f"{m.group(1)}{formatted}{m.group(2)}",
               text,
               count=1,
           )
